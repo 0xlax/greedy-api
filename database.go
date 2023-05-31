@@ -5,15 +5,12 @@ import (
 	"time"
 )
 
-type DataItem struct {
-	Key    string      `json:"key"`
-	Value  interface{} `json:"value"` //empty interface that represents a type that can hold values of any type.
-	Expiry time.Time   `json:"time"`
-	// Other fields as needed for conditions
+type KeyValueStore struct {
+	data  map[string]*KeyValue
+	mutex sync.RWMutex
 }
 
-type DataStore struct {
-	data  map[string]DataItem
-	mutex sync.RWMutex //For concurrent safe access
-
+type KeyValue struct {
+	value      string
+	expiryTime *time.Time
 }
