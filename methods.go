@@ -2,6 +2,7 @@ package main
 
 import (
 	"fmt"
+	"strings"
 	"time"
 )
 
@@ -65,4 +66,30 @@ func (store *KeyValueStore) QPush(key string, values ...string) {
 	for _, value := range values {
 		store.data[key].value += value + " "
 	}
+}
+
+// QPop method to retrieve the last inserted value from a queue
+func (store *KeyValueStore) QPop(key string) (string, error) {
+	store.mutex.Lock()
+	defer store.mutex.Unlock()
+
+	if keyValue, ok := store.data[key]; ok {
+		if keyValue.expiryTime != nil && time.Now().After(*keyValue.expiryTime) {
+			delete(store.data, key)
+			return "", fmt.Errorf("queue is empty")
+		}
+
+		values := strings.Fields(keyValue.value)
+		if len(values) > 0 {
+			lastValue := values[len(values)-1]
+			values = values[:len(values)-1]
+			store.data[key].value = strings.Join(values, " ")
+			return lastValue, nil
+		}
+
+		delete(store.data, key)
+		return "", fmt.Errorf("queue is empty")
+	}
+
+	return "", fmt.Errorf("key not found")
 }
