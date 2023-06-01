@@ -1,10 +1,18 @@
 package main
 
 import (
-	"github.com/gin-gonic/gin"
+	"log"
+	"net/http"
+	"sync"
 )
 
 func main() {
-	port := gin.Default()
-	port.Run("localhost:8000")
+	store := &KeyValueStore{
+		data:  make(map[string]*KeyValue),
+		mutex: sync.RWMutex{},
+	}
+
+	http.HandleFunc("/", handleRequest(store))
+
+	log.Fatal(http.ListenAndServe(":8080", nil))
 }
