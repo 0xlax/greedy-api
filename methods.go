@@ -93,3 +93,43 @@ func (store *KeyValueStore) QPop(key string) (string, error) {
 
 	return "", fmt.Errorf("key not found")
 }
+
+// BQPop method to perform a blocking queue read operation
+func (store *KeyValueStore) BQPop(key string, timeout float64) (string, error) {
+	store.mutex.Lock()
+	defer store.mutex.Unlock()
+
+	// Check if the queue exists
+	if _, ok := store.data[key]; !ok {
+		return "", fmt.Errorf("queue does not exist")
+	}
+
+	queue := store.data[key]
+
+	// Check if the queue is empty
+	if len(strings.Fields(queue.value)) > 0 {
+		return store.QPop(key)
+	}
+
+	// If timeout is 0, return immediately without blocking
+	if timeout == 0 {
+		return "", nil
+	}
+
+	// Create a channel to wait for the value to be pushed
+	valueChan := make(chan string, 1)
+
+	// Start a goroutine to read from the channel after the specified timeout
+	go func() {
+		time.Sleep(time.Duration(timeout) * time.Second)
+		valueChan <- ""
+	}()
+
+	select {
+	case value := <-valueChan:
+		if value == "" {
+			return "", fmt.Errorf("timeout exceeded")
+		}
+		return value, nil
+	}
+}
