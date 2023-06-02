@@ -9,35 +9,42 @@ import (
 	"time"
 )
 
+// KeyValue represents a key-value pair in the datastore.
+// It stores the value and an optional expiry time for the key.
 type KeyValue struct {
-	Value      string
-	ExpiryTime *time.Time
+	Value      string     // The value associated with the key
+	ExpiryTime *time.Time // The expiry time for the key (optional)
 }
 
+// KeyValueStore represents an in-memory key-value data store.
+// It stores the data and provides thread-safe access using a mutex.
 type KeyValueStore struct {
-	Data  map[string]*KeyValue
-	mutex sync.Mutex
+	Data  map[string]*KeyValue // The underlying data store
+	mutex sync.Mutex           // Mutex for thread-safe access to the data store
 }
+
+// Mutex : Primitive used in concurrent programming to protect shared resources
+// from being accessed simultaneously by multiple threads or goroutines
 
 type Command struct {
-	Command string `json:"command"`
+	Command string `json:"command"` // Represents a JSON command received via the REST API.
 }
 
 type ErrorResponse struct {
-	Error string `json:"error"`
+	Error string `json:"error"` // Represents a JSON response containing an error message.
 }
 
 type ValueResponse struct {
-	Value string `json:"value"`
+	Value string `json:"value"` // Represents a JSON response containing a value.
 }
 
 var store = &KeyValueStore{
-	Data: make(map[string]*KeyValue),
+	Data: make(map[string]*KeyValue), // Initializes the key-value data store.
 }
 
 func main() {
-	http.HandleFunc("/", handleRequest)
-	http.ListenAndServe(":8080", nil)
+	http.HandleFunc("/", handleRequest) // Sets up the request handler
+	http.ListenAndServe(":8080", nil)   // Starts the HTTP server and listens on port 8080.
 }
 
 func handleRequest(w http.ResponseWriter, r *http.Request) {
