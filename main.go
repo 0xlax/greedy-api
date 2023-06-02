@@ -169,14 +169,17 @@ func handleQPUSH(w http.ResponseWriter, parts []string) {
 
 	key := parts[1]
 	values := parts[2:]
-
+	//acquires a lock on the key-value store to ensure that only one process can access it at a time.
 	store.mutex.Lock()
 	defer store.mutex.Unlock()
 
+	//checks if the key already exists in the store.
+	// If it does, it appends the new values to the existing value by concatenating
 	if kv, ok := store.Data[key]; ok {
 		for _, value := range values {
 			kv.Value += " " + value
 		}
+		// If the key doesn't exist in the store, it creates a new KeyValue entry with the joined values as the value.
 	} else {
 		store.Data[key] = &KeyValue{
 			Value: strings.Join(values, " "),
@@ -194,15 +197,22 @@ func handleQPOP(w http.ResponseWriter, parts []string) {
 
 	key := parts[1]
 
+	// Acquire a lock on the store to ensure safe access
 	store.mutex.Lock()
 	defer store.mutex.Unlock()
 
 	if kv, ok := store.Data[key]; ok {
 		values := strings.Split(kv.Value, " ")
 		if len(values) > 0 {
+
+			// Set value to the last index
 			value := values[len(values)-1]
+
+			// Removes last index in the array
 			values = values[:len(values)-1]
 			kv.Value = strings.Join(values, " ")
+
+			// Send the last value as the response
 			sendValueResponse(w, value)
 			return
 		}
@@ -210,6 +220,12 @@ func handleQPOP(w http.ResponseWriter, parts []string) {
 
 	sendErrorResponse(w, "queue is empty")
 }
+
+// OPTIONAL HANDLER FUNCTION
+
+// handleBQPOP handles the blocking queue behavior by allowing
+// the caller to wait for a certain period for a value to be available in the queue
+// or to immediately retrieve a value if the queue is non-empty.
 
 func handleBQPOP(w http.ResponseWriter, parts []string) {
 	if len(parts) != 3 {
@@ -230,6 +246,7 @@ func handleBQPOP(w http.ResponseWriter, parts []string) {
 
 	if ok {
 		if timeout == 0 {
+			// A value of 0 immediately returns a value from the queue without blocking. same as QPOP
 			values := strings.Split(kv.Value, " ")
 			if len(values) > 0 {
 				value := values[len(values)-1]
@@ -239,11 +256,16 @@ func handleBQPOP(w http.ResponseWriter, parts []string) {
 				return
 			}
 		} else if timeout > 0 {
+			// convert the timeout value from seconds (represented as a float64) to a time.Duration value.
 			ticker := time.NewTicker(time.Duration(timeout) * time.Second)
 			select {
+
+			// If the ticker emitted a value, it means the specified timeout duration has elapsed.
+			// Send a timeout error response and return.
 			case <-ticker.C:
 				sendErrorResponse(w, "timeout")
 				return
+			// If the ticker didn't emit a value before the timeout
 			case <-time.After(1 * time.Second):
 				store.mutex.Lock()
 				kv, ok = store.Data[key]
