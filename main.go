@@ -47,6 +47,9 @@ func main() {
 	http.ListenAndServe(":8080", nil)   // Starts the HTTP server and listens on port 8080.
 }
 
+// ResponseWrites helps to onstruct and send response back to client
+// Request represents incoming HTTP requests recieved from client
+
 func handleRequest(w http.ResponseWriter, r *http.Request) {
 	decoder := json.NewDecoder(r.Body) //Decoder to decode request body into "Command" struct
 	defer r.Body.Close()               //Request body is closed after erquest is processed
@@ -86,12 +89,16 @@ func handleSET(w http.ResponseWriter, parts []string) {
 		return
 	}
 
-	key := parts[1]
-	value := parts[2]
+	key := parts[1]   //sets key
+	value := parts[2] // sets value
+
+	//Currently - empty initialization
 	var expiryTime time.Time
 	var condition string
 
 	if len(parts) >= 4 && strings.HasPrefix(parts[3], "EX") {
+		// extracts the number of seconds for the expiry time, converts it to an integer
+		// sets the expiryTime variable to the current time plus the specified duration.
 		seconds, err := strconv.Atoi(parts[3][2:])
 		if err != nil {
 			sendErrorResponse(w, "invalid expiry time")
@@ -107,7 +114,8 @@ func handleSET(w http.ResponseWriter, parts []string) {
 			return
 		}
 	}
-
+	//Makes sure only one process can use the store at one time
+	// To Support COncurrent Operations
 	store.mutex.Lock()
 	defer store.mutex.Unlock()
 
@@ -131,6 +139,7 @@ func handleSET(w http.ResponseWriter, parts []string) {
 	sendOKResponse(w)
 }
 
+// retrieves the value associated with a given key from the data store, ensuring concurrent access using a mutex lock.
 func handleGET(w http.ResponseWriter, parts []string) {
 	if len(parts) != 2 {
 		sendErrorResponse(w, "invalid command format")
@@ -139,6 +148,8 @@ func handleGET(w http.ResponseWriter, parts []string) {
 
 	key := parts[1]
 
+	//Makes sure only one process can use the store at one time
+	// To Support Concurrent Operations
 	store.mutex.Lock()
 	defer store.mutex.Unlock()
 
@@ -254,27 +265,23 @@ func handleBQPOP(w http.ResponseWriter, parts []string) {
 	sendErrorResponse(w, "queue is empty")
 }
 
+// Sends error response to the client.
 func sendErrorResponse(w http.ResponseWriter, errorMessage string) {
-	response := ErrorResponse{
-		Error: errorMessage,
-	}
-
+	// Create ErrorResponse object as JSON with the specified error message.
 	w.WriteHeader(http.StatusBadRequest)
-	json.NewEncoder(w).Encode(response)
+	json.NewEncoder(w).Encode(ErrorResponse{Error: errorMessage})
 }
 
+// Sends a value response.
 func sendValueResponse(w http.ResponseWriter, value string) {
-	response := ValueResponse{
-		Value: value,
-	}
-
+	// CreateValueResponse object as JSON with the specified value.
 	w.WriteHeader(http.StatusOK)
-	json.NewEncoder(w).Encode(response)
+	json.NewEncoder(w).Encode(ValueResponse{Value: value})
 }
 
+// Sends a simple OK response to the client.
 func sendOKResponse(w http.ResponseWriter) {
-	response := struct{}{}
-
+	// Send an empty response as JSON to indicate a successful response.
 	w.WriteHeader(http.StatusOK)
-	json.NewEncoder(w).Encode(response)
+	json.NewEncoder(w).Encode(struct{}{})
 }
