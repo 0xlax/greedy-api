@@ -12,7 +12,7 @@ import (
 // KeyValue represents a key-value pair in the datastore.
 // It stores the value and an optional expiry time for the key.
 type KeyValue struct {
-	Value      string     // The value associated with the key
+	Value      []string   // The value associated with the key
 	ExpiryTime *time.Time // The expiry time for the key (optional)
 }
 
@@ -20,7 +20,7 @@ type KeyValue struct {
 // It stores the data and provides thread-safe access using a mutex.
 type KeyValueStore struct {
 	Data  map[string]*KeyValue // The underlying data store
-	mutex sync.Mutex           // Mutex for thread-safe access to the data store
+	mutex sync.RWMutex         // Mutex for thread-safe access to the data store
 }
 
 // Mutex : Primitive used in concurrent programming to protect shared resources
@@ -47,12 +47,33 @@ func main() {
 	http.ListenAndServe(":8080", nil)   // Starts the HTTP server and listens on port 8080.
 }
 
+// Sends error response to the client.
+func sendErrorResponse(w http.ResponseWriter, errorMessage string) {
+	// Create ErrorResponse object as JSON with the specified error message.
+	w.WriteHeader(http.StatusBadRequest)
+	json.NewEncoder(w).Encode(ErrorResponse{Error: errorMessage})
+}
+
+// Sends a value response.
+func sendValueResponse(w http.ResponseWriter, value string) {
+	// CreateValueResponse object as JSON with the specified value.
+	w.WriteHeader(http.StatusOK)
+	json.NewEncoder(w).Encode(ValueResponse{Value: value})
+}
+
+// Sends a simple OK response to the client.
+func sendOKResponse(w http.ResponseWriter) {
+	// Send an empty response as JSON to indicate a successful response.
+	w.WriteHeader(http.StatusOK)
+	json.NewEncoder(w).Encode(struct{}{})
+}
+
 // ResponseWrites helps to onstruct and send response back to client
 // Request represents incoming HTTP requests recieved from client
 
 func handleRequest(w http.ResponseWriter, r *http.Request) {
 	decoder := json.NewDecoder(r.Body) //Decoder to decode request body into "Command" struct
-	defer r.Body.Close()               //Request body is closed after erquest is processed
+	defer r.Body.Close()               //Request body is closed after request is processed
 
 	var cmd Command
 	err := decoder.Decode(&cmd)
@@ -116,7 +137,8 @@ func handleSET(w http.ResponseWriter, parts []string) {
 	}
 	//Makes sure only one process can use the store at one time
 	// To Support COncurrent Operations
-	store.mutex.Lock()
+	store.mutex.Lock() //write lock
+
 	defer store.mutex.Unlock()
 
 	if condition == "NX" {
@@ -132,7 +154,7 @@ func handleSET(w http.ResponseWriter, parts []string) {
 	}
 
 	store.Data[key] = &KeyValue{
-		Value:      value,
+		Value:      []string{value},
 		ExpiryTime: &expiryTime,
 	}
 
@@ -150,11 +172,12 @@ func handleGET(w http.ResponseWriter, parts []string) {
 
 	//Makes sure only one process can use the store at one time
 	// To Support Concurrent Operations
-	store.mutex.Lock()
-	defer store.mutex.Unlock()
+	store.mutex.RLock()
+	defer store.mutex.RUnlock()
 
 	if kv, ok := store.Data[key]; ok {
-		sendValueResponse(w, kv.Value)
+		value := strings.Join(kv.Value, " ") // Convert the []string to a string
+		sendValueResponse(w, value)
 		return
 	}
 
@@ -169,25 +192,26 @@ func handleQPUSH(w http.ResponseWriter, parts []string) {
 
 	key := parts[1]
 	values := parts[2:]
-	//acquires a lock on the key-value store to ensure that only one process can access it at a time.
-	store.mutex.Lock()
-	defer store.mutex.Unlock()
 
-	//checks if the key already exists in the store.
-	// If it does, it appends the new values to the existing value by concatenating
+	// Acquire a lock on the store to ensure safe access
+	store.mutex.RLock()
+	defer store.mutex.RUnlock()
+
+	// Check if the key already exists in the store
 	if kv, ok := store.Data[key]; ok {
-		for _, value := range values {
-			kv.Value += " " + value
-		}
-		// If the key doesn't exist in the store, it creates a new KeyValue entry with the joined values as the value.
+		// Append the new values to the existing value slice
+		kv.Value = append(kv.Value, values...)
 	} else {
+		// If the key doesn't exist, create a new KeyValue entry with the values as the slice
 		store.Data[key] = &KeyValue{
-			Value: strings.Join(values, " "),
+			Value: values,
 		}
 	}
 
 	sendOKResponse(w)
 }
+
+// OPTIONAL
 
 func handleQPOP(w http.ResponseWriter, parts []string) {
 	if len(parts) != 2 {
@@ -202,15 +226,17 @@ func handleQPOP(w http.ResponseWriter, parts []string) {
 	defer store.mutex.Unlock()
 
 	if kv, ok := store.Data[key]; ok {
-		values := strings.Split(kv.Value, " ")
-		if len(values) > 0 {
+		values := kv.Value // Retrieve the values slice directly
 
+		if len(values) > 0 {
 			// Set value to the last index
 			value := values[len(values)-1]
 
-			// Removes last index in the array
+			// Removes last index in the slice
 			values = values[:len(values)-1]
-			kv.Value = strings.Join(values, " ")
+
+			// Update the value in the store
+			store.Data[key].Value = values
 
 			// Send the last value as the response
 			sendValueResponse(w, value)
@@ -240,18 +266,18 @@ func handleBQPOP(w http.ResponseWriter, parts []string) {
 		return
 	}
 
-	store.mutex.Lock()
+	store.mutex.RLock()
 	kv, ok := store.Data[key]
-	store.mutex.Unlock()
+	store.mutex.RUnlock()
 
 	if ok {
 		if timeout == 0 {
 			// A value of 0 immediately returns a value from the queue without blocking. same as QPOP
-			values := strings.Split(kv.Value, " ")
+			values := kv.Value
 			if len(values) > 0 {
 				value := values[len(values)-1]
 				values = values[:len(values)-1]
-				kv.Value = strings.Join(values, " ")
+				store.Data[key].Value = values
 				sendValueResponse(w, value)
 				return
 			}
@@ -267,15 +293,15 @@ func handleBQPOP(w http.ResponseWriter, parts []string) {
 				return
 			// If the ticker didn't emit a value before the timeout
 			case <-time.After(1 * time.Second):
-				store.mutex.Lock()
+				store.mutex.RLock()
 				kv, ok = store.Data[key]
-				store.mutex.Unlock()
+				store.mutex.RUnlock()
 				if ok {
-					values := strings.Split(kv.Value, " ")
+					values := kv.Value
 					if len(values) > 0 {
 						value := values[len(values)-1]
 						values = values[:len(values)-1]
-						kv.Value = strings.Join(values, " ")
+						store.Data[key].Value = values
 						sendValueResponse(w, value)
 						return
 					}
@@ -285,25 +311,4 @@ func handleBQPOP(w http.ResponseWriter, parts []string) {
 	}
 
 	sendErrorResponse(w, "queue is empty")
-}
-
-// Sends error response to the client.
-func sendErrorResponse(w http.ResponseWriter, errorMessage string) {
-	// Create ErrorResponse object as JSON with the specified error message.
-	w.WriteHeader(http.StatusBadRequest)
-	json.NewEncoder(w).Encode(ErrorResponse{Error: errorMessage})
-}
-
-// Sends a value response.
-func sendValueResponse(w http.ResponseWriter, value string) {
-	// CreateValueResponse object as JSON with the specified value.
-	w.WriteHeader(http.StatusOK)
-	json.NewEncoder(w).Encode(ValueResponse{Value: value})
-}
-
-// Sends a simple OK response to the client.
-func sendOKResponse(w http.ResponseWriter) {
-	// Send an empty response as JSON to indicate a successful response.
-	w.WriteHeader(http.StatusOK)
-	json.NewEncoder(w).Encode(struct{}{})
 }
