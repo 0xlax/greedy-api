@@ -103,10 +103,19 @@ you will allow multiple goroutines to concurrently read from the data store whil
 
 
 3) Channels (queue validation)
+RWMutex allows multiple readers to access the data simultaneously, improving performance in scenarios where there are frequent read operations.
+Use Channels for Synchronization: Instead of using mutexes for synchronization, you can leverage channels to coordinate access to shared resources. Channels provide a more expressive and safer way to synchronize goroutines. For example, you can use a channel to signal when a particular operation is completed or to coordinate access to critical sections of code.
+
+Use Channels for Queue Operations: Since your code already includes queue-related operations (QPUSH, QPOP, BQPOP), you can enhance them using channels. For instance, you can use a buffered channel as a queue data structure. When a value is pushed into the queue, it can be sent to the channel, and when a value is popped from the queue, it can be received from the channel. This way, you can utilize the built-in synchronization provided by channels.
+
 
 
 4) Redis
+
 5) tests
+
 6) Optionals matter (BQPOP)
+
 7) fix Expiry time
+
 8) Must support Spaces in Input command

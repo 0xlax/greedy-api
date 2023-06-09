@@ -38,9 +38,20 @@ type ValueResponse struct {
 	Value string `json:"value"` // Represents a JSON response containing a value.
 }
 
+type QueueOperation struct {
+	Operation      string
+	Key            string
+	Values         []string
+	Response       chan string
+	ResponseWriter http.ResponseWriter
+}
+
 var store = &KeyValueStore{
 	Data: make(map[string]*KeyValue), // Initializes the key-value data store.
 }
+
+var queueChannel = make(chan QueueOperation)
+var queueListeners sync.WaitGroup
 
 func main() {
 	http.HandleFunc("/", handleRequest) // Sets up the request handler
@@ -193,19 +204,11 @@ func handleQPUSH(w http.ResponseWriter, parts []string) {
 	key := parts[1]
 	values := parts[2:]
 
-	// Acquire a lock on the store to ensure safe access
-	store.mutex.RLock()
-	defer store.mutex.RUnlock()
-
-	// Check if the key already exists in the store
-	if kv, ok := store.Data[key]; ok {
-		// Append the new values to the existing value slice
-		kv.Value = append(kv.Value, values...)
-	} else {
-		// If the key doesn't exist, create a new KeyValue entry with the values as the slice
-		store.Data[key] = &KeyValue{
-			Value: values,
-		}
+	queueChannel <- QueueOperation{
+		Operation: "QPUSH",
+		Key:       key,
+		Values:    values,
+		Response:  make(chan string),
 	}
 
 	sendOKResponse(w)
@@ -221,30 +224,20 @@ func handleQPOP(w http.ResponseWriter, parts []string) {
 
 	key := parts[1]
 
-	// Acquire a lock on the store to ensure safe access
-	store.mutex.Lock()
-	defer store.mutex.Unlock()
+	responseChan := make(chan string)
 
-	if kv, ok := store.Data[key]; ok {
-		values := kv.Value // Retrieve the values slice directly
-
-		if len(values) > 0 {
-			// Set value to the last index
-			value := values[len(values)-1]
-
-			// Removes last index in the slice
-			values = values[:len(values)-1]
-
-			// Update the value in the store
-			store.Data[key].Value = values
-
-			// Send the last value as the response
-			sendValueResponse(w, value)
-			return
-		}
+	queueChannel <- QueueOperation{
+		Operation: "QPOP",
+		Key:       key,
+		Response:  make(chan string),
 	}
 
-	sendErrorResponse(w, "queue is empty")
+	response := <-responseChan
+	if response != "" {
+		sendValueResponse(w, response)
+	} else {
+		sendErrorResponse(w, "queue is empty")
+	}
 }
 
 // OPTIONAL HANDLER FUNCTION
@@ -254,61 +247,112 @@ func handleQPOP(w http.ResponseWriter, parts []string) {
 // or to immediately retrieve a value if the queue is non-empty.
 
 func handleBQPOP(w http.ResponseWriter, parts []string) {
-	if len(parts) != 3 {
+	if len(parts) != 2 {
 		sendErrorResponse(w, "invalid command format")
 		return
 	}
 
 	key := parts[1]
-	timeout, err := strconv.ParseFloat(parts[2], 64)
-	if err != nil {
-		sendErrorResponse(w, "invalid timeout")
-		return
+
+	responseChan := make(chan string)
+	queueChannel <- QueueOperation{
+		Operation: "BQPOP",
+		Key:       key,
+		Response:  responseChan,
 	}
 
-	store.mutex.RLock()
-	kv, ok := store.Data[key]
-	store.mutex.RUnlock()
+	select {
+	case response := <-responseChan:
+		sendValueResponse(w, response)
+	case <-time.After(5 * time.Second): // Wait for 5 seconds and return if no response is received
+		sendErrorResponse(w, "timeout")
+	}
+}
 
-	if ok {
-		if timeout == 0 {
-			// A value of 0 immediately returns a value from the queue without blocking. same as QPOP
-			values := kv.Value
-			if len(values) > 0 {
-				value := values[len(values)-1]
-				values = values[:len(values)-1]
-				store.Data[key].Value = values
-				sendValueResponse(w, value)
-				return
-			}
-		} else if timeout > 0 {
-			// convert the timeout value from seconds (represented as a float64) to a time.Duration value.
-			ticker := time.NewTicker(time.Duration(timeout) * time.Second)
-			select {
+func handleQueueOperations() {
+	for {
+		op := <-queueChannel
 
-			// If the ticker emitted a value, it means the specified timeout duration has elapsed.
-			// Send a timeout error response and return.
-			case <-ticker.C:
-				sendErrorResponse(w, "timeout")
-				return
-			// If the ticker didn't emit a value before the timeout
-			case <-time.After(1 * time.Second):
-				store.mutex.RLock()
-				kv, ok = store.Data[key]
-				store.mutex.RUnlock()
-				if ok {
-					values := kv.Value
-					if len(values) > 0 {
-						value := values[len(values)-1]
-						values = values[:len(values)-1]
-						store.Data[key].Value = values
-						sendValueResponse(w, value)
-						return
-					}
-				}
-			}
+		switch op.Operation {
+		case "QPUSH":
+			handleQueuePush(op.Key, op.Values, op.Response)
+		case "QPOP":
+			handleQueuePop(op.Key, op.Response)
+		case "BQPOP":
+			handleBlockingQueuePop(op.Key, op.Response, op.ResponseWriter)
+		}
+	}
+}
+
+func handleQueuePush(key string, values []string, response chan string) {
+	store.mutex.Lock()
+	defer store.mutex.Unlock()
+
+	if kv, ok := store.Data[key]; ok {
+		kv.Value = append(kv.Value, values...)
+	} else {
+		store.Data[key] = &KeyValue{
+			Value: values,
 		}
 	}
 
-	sendErrorResponse(w, "queue is empty")
+	response <- ""
+}
+
+func handleQueuePop(key string, response chan string) {
+	store.mutex.Lock()
+	defer store.mutex.Unlock()
+
+	if kv, ok := store.Data[key]; ok {
+		values := kv.Value
+
+		if len(values) > 0 {
+			value := values[len(values)-1]
+			values = values[:len(values)-1]
+			store.Data[key].Value = values
+
+			response <- value
+			return
+		}
+	}
+
+	response <- "queue is empty"
+}
+
+func handleBlockingQueuePop(key string, response chan string, w http.ResponseWriter) {
+	store.mutex.Lock()
+
+	if kv, ok := store.Data[key]; ok {
+		values := kv.Value
+
+		if len(values) > 0 {
+			value := values[len(values)-1]
+			values = values[:len(values)-1]
+			store.Data[key].Value = values
+
+			response <- value
+			store.mutex.Unlock()
+			return
+		}
+	}
+
+	store.mutex.Unlock()
+
+	// If the queue is empty, wait for a new value to be pushed
+	queueListeners.Add(1)
+	go func() {
+		defer queueListeners.Done()
+
+		// Wait for a signal on the response channel
+		value := <-response
+		response <- value
+	}()
+
+	// Wait for a response or timeout after 5 seconds
+	select {
+	case value := <-response:
+		sendValueResponse(w, value)
+	case <-time.After(5 * time.Second):
+		sendErrorResponse(w, "timeout")
+	}
 }
