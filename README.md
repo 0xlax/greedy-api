@@ -111,11 +111,84 @@ Use Channels for Queue Operations: Since your code already includes queue-relate
 
 
 4) Redis
+Done
+
 
 5) tests
 
-6) Optionals matter (BQPOP)
 
 7) fix Expiry time
 
+
 8) Must support Spaces in Input command
+
+
+
+
+
+
+
+
+
+
+
+
+func handleBQPOP(w http.ResponseWriter, parts []string) {
+	if len(parts) != 3 {
+		sendErrorResponse(w, "invalid command format")
+		return
+	}
+
+	key := parts[1]
+	timeout, err := strconv.ParseFloat(parts[2], 64)
+	if err != nil {
+		sendErrorResponse(w, "invalid timeout")
+		return
+	}
+
+	store.mutex.RLock()
+	kv, ok := store.Data[key]
+	store.mutex.RUnlock()
+
+	if ok {
+		if timeout == 0 {
+			// A value of 0 immediately returns a value from the queue without blocking. same as QPOP
+			values := kv.Value
+			if len(values) > 0 {
+				value := values[len(values)-1]
+				values = values[:len(values)-1]
+				store.Data[key].Value = values
+				sendValueResponse(w, value)
+				return
+			}
+		} else if timeout > 0 {
+			// convert the timeout value from seconds (represented as a float64) to a time.Duration value.
+			ticker := time.NewTicker(time.Duration(timeout) * time.Second)
+			select {
+
+			// If the ticker emitted a value, it means the specified timeout duration has elapsed.
+			// Send a timeout error response and return.
+			case <-ticker.C:
+				sendErrorResponse(w, "timeout")
+				return
+			// If the ticker didn't emit a value before the timeout
+			case <-time.After(1 * time.Second):
+				store.mutex.RLock()
+				kv, ok = store.Data[key]
+				store.mutex.RUnlock()
+				if ok {
+					values := kv.Value
+					if len(values) > 0 {
+						value := values[len(values)-1]
+						values = values[:len(values)-1]
+						store.Data[key].Value = values
+						sendValueResponse(w, value)
+						return
+					}
+				}
+			}
+		}
+	}
+
+	sendErrorResponse(w, "queue is empty")
+}
